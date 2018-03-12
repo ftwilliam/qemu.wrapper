@@ -1,0 +1,138 @@
+#!/bin/bash
+
+# Wrapper script to start qemu with custom settings.
+
+# Make sure it run from within the location of this script.
+cd $(dirname $0) || {
+	echo 'failed to cd to qemu wrapper location !!!'
+	exit 1
+}
+
+# Configuration section:
+# ----------------------------------------------------------
+VMID=${VMID:-10}
+VMNAME="vm${VMID}"
+VMCPUCNT=$(getconf _NPROCESSORS_ONLN)
+VMRAMSZ=4096
+VMTAPNAME="${VMNAME}"
+VMTAPMACADDR="$(if [ -e macaddr ]; then echo -n $(cat macaddr); else printf '52:%02x:%02x:%02x:%02x:%02x' $[RANDOM%256] $[RANDOM%256] $[RANDOM%256] $[RANDOM%256] ${VMID} | tee macaddr; fi)"
+# NOTE: ${VMMONITORSOCKET} is also used
+#	to tell whether the guest is already;
+#	through the use of netstat.
+#	Hence the reason why ${VNAME} is
+#	concatenated within its socket name.
+VMMONITORSOCKET="${VMNAME}monitor"
+VMCONSOLESOCKET="${VMNAME}console"
+VMHDRIVE="hd.qcow2"
+VMVNCADDR=":${VMID}"
+VMVIRTFSPATH="$(pwd)/virtfs"
+# ----------------------------------------------------------
+
+test ${UID} -ne 0 && {
+	echo 'must be root !!!'
+	exit 1
+}
+
+netstat -l 2>/dev/null | fgrep ${VMMONITORSOCKET} &>/dev/null && {
+	echo "VMID:${VMID} already in-use !!!"
+	exit 1
+}
+
+# Save whether -daemonize was used.
+DAEMONIZE=$(echo -n $@ | fgrep daemonize)
+
+function destroytap {
+	# Destroy tap
+	ip link set ${VMTAPNAME} down		# Bring tap down
+	ip link set ${VMTAPNAME} nomaster		# Remove tap from bridge
+	ip tuntap del ${VMTAPNAME} mode tap	# Destroy tap
+}
+
+function siginttrap {
+
+	destroytap
+
+	# Restore Ctrl-c mapping
+	stty intr ^c
+
+	exit 1
+}
+
+[ -z "${DAEMONIZE}" ] && trap siginttrap SIGINT
+
+# Setup network if the host has a bridge named br0.
+[ "$(ifconfig | fgrep br0)" == ""  ] && {
+	echo 'bridge br0 missing !'
+	exit 1
+}
+
+# If tap with the same name exist, destroy it.
+[ "$(ifconfig | fgrep ${VMTAPNAME})" != ""  ] && {
+
+	destroytap
+
+	# Check if the tap was destroyed.
+	[ "$(ifconfig | fgrep ${VMTAPNAME})" != ""  ] && {
+		echo "could not remove tap interface ${VMTAPNAME}"
+		exit 1
+	}
+}
+
+# Create tap.
+ip tuntap add ${VMTAPNAME} mode tap	# Create tap
+ip link set ${VMTAPNAME} master br0	# Add tap to bridge
+ip link set ${VMTAPNAME} up		# Bring tap up
+
+# Map Ctrl-c to Ctrl-] .
+[ -z "${DAEMONIZE}" ] && stty intr ^]
+
+# Launch VM.
+#gdb -q -nx -x qemu.gdb --args
+$([ -n "${DAEMONIZE}" ] && echo -n exec) qemu-system-x86_64 \
+	-name "${VMNAME}" \
+	-nodefaults \
+	-pidfile pid \
+	-machine q35 \
+	-enable-kvm \
+	-cpu host -smp ${VMCPUCNT} \
+	-m ${VMRAMSZ}M \
+	-drive file=${VMHDRIVE},format=qcow2 \
+	-drive media=cdrom${VMBOOTCDROM:+,file=${VMBOOTCDROM}} \
+	-boot once=${VMBOOTCDROM:+d}c \
+	$(if [ -z "${DAEMONIZE}" ]; then echo -n '-serial stdio'; else echo -n "-serial unix:${VMCONSOLESOCKET},server,nowait"; fi) \
+	-monitor unix:${VMMONITORSOCKET},server,nowait \
+	-net nic,macaddr=${VMTAPMACADDR},model=virtio -net tap,ifname=${VMTAPNAME},script=no,downscript=no,vhost=on \
+	-vga std -vnc ${VMVNCADDR} \
+	-usb -device usb-tablet \
+	$@
+
+# Alternative to using model=virtio:
+#-net nic,macaddr=${VMTAPMACADDR},model=e1000 -net tap,ifname=${VMTAPNAME},script=no,downscript=no
+
+# Use the following for local network instead of bridged network:
+#-net nic,macaddr=${VMTAPMACADDR} -net user,net=192.168.2.0/24,dhcpstart=192.168.2.10
+
+# To attach iso backed cdrom.
+#-drive media=cdrom,file=cdrom.iso
+
+# To have QEMU behave as a GDB server.
+#-gdb tcp::1234
+
+# To use virtfs.
+#-virtfs local,path=${VMVIRTFSPATH},mount_tag=virtfs,security_model=passthrough,id=virtfs
+
+#-boot once=d #Boot the first virtual cdrom drive once.
+#-boot order=c #Boot the first virtual harddrive.
+#-boot order=nc #Try booting from virtual network first, then harddrive.
+
+[ -z "${DAEMONIZE}" ] && {
+
+	rm -f ${VMNAME}.pid
+
+	# Restore Ctrl-c mapping.
+	stty intr ^c
+
+	destroytap
+}
+
+exit 0

@@ -1,0 +1,71 @@
+Wrapper around qemu
+-------------------
+
+# To boot once (ie: for installation) from an iso file use:
+sudo VMBOOTCDROM="/path/to/iso/file" ./qemu
+
+# To run the VM as a daemon use:
+sudo ./qemu -daemonize
+
+# Access the VM monitor using:
+sudo minicom -D unix#monitor
+
+# When starting the wrapper using -daemonize, access the VM console using:
+sudo minicom -D unix#console
+
+# To run the VM with a VMID different
+# from the default set within ./qemu use:
+sudo VMID=12 ./qemu
+
+# Edit ./qemu directly to achieve a more complex configuration.
+
+
+Deployment:
+-----------
+
+# To package for deployment:
+make package
+
+# To deploy:
+tar -xf <name>.tar.xz
+
+
+QCOW cheatsheet:
+----------------
+
+# Create a qcow2 image:
+qemu-img create -f qcow2 hd.qcow2 20G
+
+# Resize a qcow2 image:
+qemu-img resize hd.qcow2 +10GB
+
+# Create a qcow2 image which is based from a backing image:
+qemu-img create -b base.qcow2 -f qcow2 backedhd.qcow2
+
+# Create a snapshot within an image:
+qemu-img snapshot -c snapshotname hd.qcow2
+
+# List snapshots within an image:
+qemu-img snapshot -l hd.qcow2
+
+# Restore a snapshot state within an image:
+qemu-img snapshot -a snapshotname hd.qcow2
+
+# Delete a snapshot from an image:
+qemu-img snapshot -d snapshotname hd.qcow2
+
+# Copy only the current state of the image to a new image:
+qemu-img convert -p -f qcow2 src.qcow2 -O qcow2 dst.qcow2
+
+# Note that the above snapshot commands should be used
+# only when the guest is not running.
+# When the guest is running, a snapshot should be saved
+# using the following command entered at its monitor:
+(qemu) savevm TAGNAME
+# The state get stored in the qcow2 image for the first block device used by the guest,
+# such that when the guest is not running, "qemu-img snapshot -l" can list
+# the snapshot that was created while the guest was running.
+# To restore a state while the guest is running:
+(qemu) loadvm TAGNAME
+# To list existing snapshots while the guest is running:
+(qemu) info snapshots
